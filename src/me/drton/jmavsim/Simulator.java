@@ -48,7 +48,7 @@ public class Simulator implements Runnable {
     public static final String DEFAULT_AUTOPILOT_TYPE = "generic";  // eg. "px4" or "aq"
     public static final int    DEFAULT_AUTOPILOT_PORT = 14560;
     public static final int    DEFAULT_QGC_BIND_PORT = 0;
-    public static final int    DEFAULT_QGC_PEER_PORT = 14550;
+    public static final int    DEFAULT_QGC_PEER_PORT = 15550;
     public static final String DEFAULT_SERIAL_PATH = "/dev/tty.usbmodem1";
     public static final int    DEFAULT_SERIAL_BAUD_RATE = 230400;
     public static final String LOCAL_HOST = "127.0.0.1";
@@ -60,7 +60,11 @@ public class Simulator implements Runnable {
     // Seattle downtown: 47.592182, -122.316031, 86m
     // Moscow downtown: 55.753395, 37.625427, 155m
     // Trumansburg: 42.5339037, -76.6452384, 287m
-    public static LatLonAlt DEFAULT_ORIGIN_POS = new LatLonAlt(47.397742, 8.545594, 488);
+// VSU farm: 37.2272186, -77.4395294, 15m
+
+    public static LatLonAlt DEFAULT_ORIGIN_POS = new LatLonAlt(37.2272186, -77.4395294, 15);
+    //public static LatLonAlt DEFAULT_ORIGIN_POS = new LatLonAlt(47.592182, -122.316031, 86);
+    //public static LatLonAlt DEFAULT_ORIGIN_POS = new LatLonAlt(47.397742, 8.545594, 488);
 
     // Mag inclination and declination in degrees. If both are left as zero, then DEFAULT_MAG_FIELD is used.
     // If DO_MAG_FIELD_LOOKUP = true or -automag switch is used then both this value and DEFAULT_MAG_FIELD are ignored.
@@ -76,6 +80,7 @@ public class Simulator implements Runnable {
     // Seattle: (0.34252f, 0.09805f, 0.93438f)
     // Moscow:  (0.31337f, 0.06030f, 0.94771f)
     public static Vector3d  DEFAULT_MAG_FIELD = new Vector3d(0.44831f, 0.01664f, 0.89372f);
+    //public static Vector3d  DEFAULT_MAG_FIELD = new Vector3d(0.44831f, 0.01664f, 0.89372f);
     
     public static int    DEFAULT_CAM_PITCH_CHAN = 4;     // Control gimbal pitch from autopilot, -1 to disable
     public static int    DEFAULT_CAM_ROLL_CHAN  = -1;     // Control gimbal roll from autopilot, -1 to disable
@@ -94,6 +99,9 @@ public class Simulator implements Runnable {
     private static String serialPath = DEFAULT_SERIAL_PATH;
     private static int serialBaudRate = DEFAULT_SERIAL_BAUD_RATE;
     
+    private static double originpos_lat = 0;
+    private static double originpos_lon = 0;
+    private static double originpos_alt = 0;
     private static HashSet<Integer> monitorMessageIds = new HashSet<Integer>();
     private static boolean monitorMessage = false;
 
@@ -119,7 +127,13 @@ public class Simulator implements Runnable {
         
         // Create world
         world = new World();
-        LatLonAlt referencePos = DEFAULT_ORIGIN_POS;
+	LatLonAlt referencePos;
+        if (originpos_lat ==0) //wang hack, if 0, that mean gps option not used/invalid
+		referencePos = DEFAULT_ORIGIN_POS;
+	else
+		referencePos = new LatLonAlt(originpos_lat, originpos_lon, originpos_alt);
+
+
         world.setGlobalReference(referencePos);
 
         // Create environment
@@ -183,6 +197,8 @@ public class Simulator implements Runnable {
         udpGCMavLinkPort = new UDPMavLinkPort(schema);
         //udpGCMavLinkPort.setDebug(true);
         if (COMMUNICATE_WITH_QGC) {
+	    System.out.println(qgcIpAddress);
+	    System.out.println(qgcPeerPort);
             udpGCMavLinkPort.setup(qgcBindPort, qgcIpAddress, qgcPeerPort);
             //udpGCMavLinkPort.setDebug(true);
             if (monitorMessage && USE_SERIAL_PORT)
@@ -430,7 +446,8 @@ public class Simulator implements Runnable {
     
     public final static String PRINT_INDICATION_STRING = "-m [<MsgID[, MsgID]...>]";
     public final static String UDP_STRING = "-udp <mav ip>:<mav port>";
-    public final static String QGC_STRING = "-qgc"; // <qgc ip address>:<qgc peer port> <qgc bind port>
+    public final static String GPS_STRING = "-gps lat:lon:alt";
+    public final static String QGC_STRING = "-qgc <ip address>:<qgc peer port> <qgc bind port>";
     public final static String SERIAL_STRING = "-serial [<path> <baudRate>]";
     public final static String MAG_STRING = "-automag";
     public final static String REP_STRING = "-rep";
@@ -512,6 +529,37 @@ public class Simulator implements Runnable {
                     System.err.println("-udp needs an argument: " + UDP_STRING);
                     return;
                 }
+	    }
+            else if (arg.equalsIgnoreCase("-gps")) {
+                if (i == args.length) {
+                    // only arg is -udp, so use default values.
+                    break;
+                }
+                if (i < args.length) {
+                    String nextArg = args[i++];
+                    if (nextArg.startsWith("-")) {
+                        // only turning on udp, but want to use default ports
+                        i--;
+                        continue;
+                    }
+                    try {
+                        // try to parse passed-in ports.
+                        String[] list = nextArg.split(":");
+                        if (list.length != 3) {
+                            System.err.println("Expected: " + GPS_STRING + ", got: " + Arrays.toString(list));
+                            return;
+                        }
+                        originpos_lat = Double.parseDouble(list[0]);
+                        originpos_lon = Double.parseDouble(list[1]);
+                        originpos_alt = Double.parseDouble(list[2]);
+                    } catch (NumberFormatException e) {
+                        System.err.println("Expected: " + USAGE_STRING + ", got: " + e.toString());
+                        return;
+                    }
+                } else {
+                    System.err.println("-gps needs an argument: " + GPS_STRING);
+                    return;
+                }
             } else if (arg.equals("-serial")) {
                 USE_SERIAL_PORT = true;
                 if (i >= args.length) {
@@ -537,42 +585,42 @@ public class Simulator implements Runnable {
                 }
             } else if (arg.equals("-qgc")) {
                 COMMUNICATE_WITH_QGC = true;
-                // if (i < args.length) {
-                //     String firstArg = args[i++];
-                //     try {
-                //         String[] list = firstArg.split(":");
-                //         if (list.length == 1) {
-                //             // Only one argument turns off QGC if the arg is -1
-                //             //qgcBindPort = Integer.parseInt(list[0]);
-                //             if (qgcBindPort < 0) {
-                //                 COMMUNICATE_WITH_QGC = false;
-                //                 continue;
-                //             } else {
-                //                 System.err.println("Expected: " + QGC_STRING + ", got: " + Arrays.toString(args));
-                //                 return;
-                //             }
-                //         } else if (list.length == 2) {
-                //             qgcIpAddress = list[0];
-                //             qgcPeerPort = Integer.parseInt(list[1]);
-                //         } else {
-                //             System.err.println("-qgc needs the correct number of arguments. Expected: " + QGC_STRING + ", got: " + Arrays.toString(args));
-                //             return;
-                //         }
-                //         if (i < args.length) {
-                //             // Parsed QGC peer IP and peer Port, or errored out already
-                //             String secondArg = args[i++];
-                //             qgcBindPort = Integer.parseInt(secondArg);
-                //         } else {
-                //             System.err.println("Wrong number of arguments. Expected: " + QGC_STRING + ", got: " + Arrays.toString(args));
-                //         }
-                //     } catch (NumberFormatException e) {
-                //         System.err.println("Expected: " + USAGE_STRING + ", got: " + e.toString());
-                //         return;
-                //     }
-                // } else {
-                //     System.err.println("-qgc needs an argument: " + QGC_STRING);
-                //     return;
-                // }
+                 if (i < args.length) {
+                     String firstArg = args[i++];
+                     try {
+                         String[] list = firstArg.split(":");
+                         if (list.length == 1) {
+                             // Only one argument turns off QGC if the arg is -1
+                             qgcBindPort = Integer.parseInt(list[0]);
+                             if (qgcBindPort < 0) {
+                                 COMMUNICATE_WITH_QGC = false;
+                                 continue;
+                             } else {
+                                 System.err.println("Expected: " + QGC_STRING + ", got: " + Arrays.toString(args));
+                                 return;
+                             }
+                         } else if (list.length == 2) {
+                             qgcIpAddress = list[0];
+                             qgcPeerPort = Integer.parseInt(list[1]);
+                         } else {
+                             System.err.println("-qgc needs the correct number of arguments. Expected: " + QGC_STRING + ", got: " + Arrays.toString(args));
+                             return;
+                         }
+                         if (i < args.length) {
+                             // Parsed QGC peer IP and peer Port, or errored out already
+                             String secondArg = args[i++];
+                             qgcBindPort = Integer.parseInt(secondArg);
+                         } else {
+                             System.err.println("Wrong number of arguments. Expected: " + QGC_STRING + ", got: " + Arrays.toString(args));
+                         }
+                     } catch (NumberFormatException e) {
+                         System.err.println("Expected: " + USAGE_STRING + ", got: " + e.toString());
+                         return;
+                     }
+                 } else {
+                     System.err.println("-qgc needs an argument: " + QGC_STRING);
+                     return;
+                 }
             } else if (arg.equals("-ap")) {
                 if (i < args.length) {
                     autopilotType = args[i++];
